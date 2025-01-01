@@ -16,7 +16,9 @@ An automated client for the SpaceTraders API game (https://spacetraders.io/). Th
 - ⚡ High-performance async operations
 - 🔒 Secure API token handling
 - 🧪 Comprehensive test coverage
+
 Note: there are two mining modes for debugging purposes for now; Coordinated mining I aim to be the default as soon as everything works great. Todo: everything except mining.
+
 ## Prerequisites
 
 - Python 3.8 or higher
@@ -37,7 +39,9 @@ pip install -r requirements.txt
 ```
 
 3. Create a `.env` file in the root directory with your SpaceTraders API token:
+
 Note: if running for the first time, the .env file will be created for you. Feel free to manually add API tokens if you started a run before the next reset happens.
+
 ```
 SPACETRADERS_TOKEN=your_token_here
 ```
