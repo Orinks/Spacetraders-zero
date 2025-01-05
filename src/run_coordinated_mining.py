@@ -1,8 +1,8 @@
 import os
 
-from automation.coordinated_mining import (CoordinatedMiningError,
-                                           coordinate_mining_operation)
-from client import SpaceTradersClient
+from src.automation.coordinated_mining import (CoordinatedMiningError,
+                                           coordinate_mining)
+from src.client import SpaceTradersClient
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
         print(f"Market: {market_waypoint}")
 
         # Start coordinated mining
-        coordinate_mining_operation(client, market_waypoint)
+        coordinate_mining(client, market_waypoint)
 
     except CoordinatedMiningError as e:
         print(f"\nCoordinated mining error: {str(e)}")

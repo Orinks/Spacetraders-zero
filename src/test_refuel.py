@@ -2,7 +2,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from client import SpaceTradersClient
+from src.client import SpaceTradersClient
 
 print("Starting test_refuel.py...")  # Debug print
 

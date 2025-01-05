@@ -1,454 +1,533 @@
-import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-
 import requests
-from dotenv import load_dotenv, set_key
-from pydantic import BaseModel
-
-
-class ApiError(Exception):
-    """Custom exception for API errors"""
-
-    pass
+from src.exceptions import (
+    SpaceTradersError,
+    AuthenticationError,
+    NetworkError,
+    ValidationError,
+    ResourceNotFoundError,
+    CooldownError,
+    InsufficientResourcesError,
+)
 
 
 class SpaceTradersClient:
-    BASE_URL = "https://api.spacetraders.io/v2"
+    def __init__(self, token):
+        self.token = token
+        self.base_url = "https://api.spacetraders.io/v2"
+        self.headers = {"Authorization": f"Bearer {token}"}
 
-    def __init__(self, token: Optional[str] = None):
-        """Initialize the SpaceTraders client with an optional token"""
-        load_dotenv()
-        self.token = token or os.getenv("SPACETRADERS_TOKEN")
-        if not self.token:
-            raise ValueError(
-                "API token is required. Set it in .env file or pass to constructor."
-            )
-
-        self.headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-
-    @staticmethod
-    def register_new_agent(symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
-        """
-        Register a new agent and save the token to .env file
-
-        Args:
-            symbol: Unique identifier for your agent (3-14 characters, A-Z, 0-9, -)
-            faction: Starting faction (default: COSMIC)
-
-        Returns:
-            Dict containing registration response data
-        """
-        url = f"{SpaceTradersClient.BASE_URL}/register"
-
+    def _make_request(self, method, endpoint, data=None, params=None):
+        url = f"{self.base_url}/{endpoint}"
         try:
-            response = requests.post(url, json={"symbol": symbol, "faction": faction})
-            response.raise_for_status()
-            data = response.json()
+            if method == "GET":
+                response = requests.get(url, headers=self.headers, params=params)
+            elif method == "POST":
+                response = requests.post(url, headers=self.headers, json=data)
+            else:
+                raise SpaceTradersError(f"Unsupported method: {method}")
 
-            # Save token to .env file
-            token = data["data"]["token"]
-            env_path = Path(".env")
-
-            # Create .env file if it doesn't exist
-            env_path.touch(exist_ok=True)
-
-            # Save token to .env
-            set_key(str(env_path), "SPACETRADERS_TOKEN", token)
-
-            return data
-
-        except requests.exceptions.RequestException as e:
-            raise ApiError(f"Registration failed: {str(e)}")
-
-    def _make_request(
-        self, method: str, endpoint: str, data: Optional[Dict] = None
-    ) -> Dict[str, Any]:
-        """Make a request to the SpaceTraders API"""
-        url = f"{self.BASE_URL}/{endpoint}"
-
-        try:
-            response = requests.request(
-                method=method, url=url, headers=self.headers, json=data
-            )
-            if response.status_code == 422:
-                error_data = response.json()
-                raise ApiError(
-                    f"API request failed: {response.status_code} {response.reason} - {error_data.get('error', {}).get('message', 'No details provided')}"
-                )
-            response.raise_for_status()
+            if response.status_code == 401:
+                raise AuthenticationError("Invalid token")
+            if response.status_code != 200 and response.status_code != 201:
+                raise SpaceTradersError(f"API Error: {response.status_code} - {response.text}")
+            
             return response.json()
         except requests.exceptions.RequestException as e:
-            raise ApiError(f"API request failed: {str(e)}")
+            raise NetworkError(f"Network error: {str(e)}")
 
-    def get_agent(self) -> Dict[str, Any]:
-        """Get current agent details"""
+    def get_status(self):
+        return self._make_request("GET", "game/status")
+
+    def get_agent(self):
         return self._make_request("GET", "my/agent")
 
-    def list_contracts(self) -> Dict[str, Any]:
-        """List available contracts"""
-        return self._make_request("GET", "my/contracts")
-
-    def list_ships(self) -> Dict[str, Any]:
-        """List owned ships"""
+    def list_ships(self):
+        """Get a list of all ships owned by the authenticated agent."""
         return self._make_request("GET", "my/ships")
 
-    def get_system_waypoints(self, system_symbol: str) -> Dict[str, Any]:
-        """Get waypoints in a system"""
-        return self._make_request("GET", f"systems/{system_symbol}/waypoints")
-
-    def get_market(self, system_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
-        """Get market data for a waypoint"""
-        return self._make_request(
-            "GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/market"
-        )
-
-    def navigate_ship(self, ship_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
-        """Navigate ship to waypoint"""
-        return self._make_request(
-            "POST",
-            f"my/ships/{ship_symbol}/navigate",
-            {"waypointSymbol": waypoint_symbol},
-        )
-
-    def dock_ship(self, ship_symbol: str) -> Dict[str, Any]:
-        """Dock ship at current waypoint"""
-        return self._make_request("POST", f"my/ships/{ship_symbol}/dock")
-
-    def orbit_ship(self, ship_symbol: str) -> Dict[str, Any]:
-        """Move ship to orbit"""
-        return self._make_request("POST", f"my/ships/{ship_symbol}/orbit")
-
-    def get_shipyard(self, system_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
-        """Get shipyard data for a waypoint"""
-        return self._make_request(
-            "GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/shipyard"
-        )
-
-    def get_waypoint(self, system_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
-        """Get waypoint details"""
-        return self._make_request(
-            "GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}"
-        )
-
-    def purchase_ship(self, ship_type: str, waypoint_symbol: str) -> Dict[str, Any]:
-        """Purchase a ship at the specified waypoint"""
-        return self._make_request(
-            "POST",
-            "my/ships",
-            {"shipType": ship_type, "waypointSymbol": waypoint_symbol},
-        )
-
-    def get_agent_details(self) -> Dict[str, Any]:
-        """Get detailed agent information including credits"""
-        return self._make_request("GET", "my/agent")
-
-    def has_ship_type(self, ships_data: List[Dict[str, Any]], ship_type: str) -> bool:
-        """Check if agent already owns a specific type of ship"""
-        return any(ship["frame"]["symbol"] == ship_type for ship in ships_data)
-
-    def extract_resources(self, ship_symbol: str) -> Dict[str, Any]:
-        """Extract resources at current location"""
-        return self._make_request("POST", f"my/ships/{ship_symbol}/extract")
-
-    def get_ship_cargo(self, ship_symbol: str) -> Dict[str, Any]:
-        """Get ship's cargo details"""
-        return self._make_request("GET", f"my/ships/{ship_symbol}/cargo")
-
-    def get_ship_cooldown(self, ship_symbol: str) -> Dict[str, Any]:
-        """Get ship's cooldown status"""
-        return self._make_request("GET", f"my/ships/{ship_symbol}/cooldown")
-
-    def check_waypoint_sells_fuel(
-        self, system_symbol: str, waypoint_symbol: str
-    ) -> bool:
-        """Check if a waypoint sells fuel"""
-        try:
-            market = self.get_market(system_symbol, waypoint_symbol)
-            return any(
-                good["symbol"] == "FUEL"
-                for good in market["data"].get("tradeGoods", [])
-            )
-        except ApiError:
-            return False
-
-    def find_shipyards_in_system(self, system_symbol: str) -> List[Dict[str, Any]]:
-        """Find all shipyards in the system"""
-        try:
-            # Get all waypoints with pagination
-            all_waypoints = []
-            page = 1
-            while True:
-                response = self._make_request(
-                    "GET", f"systems/{system_symbol}/waypoints?page={page}"
-                )
-                all_waypoints.extend(response["data"])
-                if page * 20 >= response["meta"]["total"]:
-                    break
-                page += 1
-
-            # Look for waypoints with shipyard trait
-            shipyards = [
-                waypoint
-                for waypoint in all_waypoints
-                if any(
-                    trait["symbol"] == "SHIPYARD"
-                    for trait in waypoint.get("traits", [])
-                )
-            ]
-
-            if shipyards:
-                print(f"Found {len(shipyards)} shipyards:")
-                for shipyard in shipyards:
-                    print(
-                        f"- {shipyard['symbol']} at ({shipyard['x']}, {shipyard['y']})"
-                    )
-            else:
-                print("No shipyards found in this system.")
-
-            return shipyards
-
-        except ApiError as e:
-            print(f"Error searching for shipyards: {e}")
-            return []
-
-    def find_nearest_shipyard(
-        self, system_symbol: str, current_x: int, current_y: int
-    ) -> Optional[Dict[str, Any]]:
-        """Find the nearest shipyard to the given coordinates"""
-        shipyards = self.find_shipyards_in_system(system_symbol)
-        if not shipyards:
-            return None
-
-        # Calculate distances and find the closest
-        def distance(waypoint):
-            dx = waypoint["x"] - current_x
-            dy = waypoint["y"] - current_y
-            return (dx * dx + dy * dy) ** 0.5
-
-        return min(shipyards, key=distance)
-
-    def find_fuel_stations_in_system(self, system_symbol: str) -> List[Dict[str, Any]]:
-        """Find all fuel stations in the system"""
-        try:
-            waypoints = []
-            page = 1
-            while True:
-                response = self._make_request(
-                    "GET", f"systems/{system_symbol}/waypoints?page={page}"
-                )
-                waypoints.extend(response["data"])
-                if page * 10 >= response["meta"]["total"]:
-                    break
-                page += 1
-
-            # Look for FUEL_STATION type waypoints
-            fuel_stations = [
-                waypoint for waypoint in waypoints if waypoint["type"] == "FUEL_STATION"
-            ]
-
-            if fuel_stations:
-                print(f"Found {len(fuel_stations)} fuel stations:")
-                for station in fuel_stations:
-                    print(f"- {station['symbol']} at ({station['x']}, {station['y']})")
-            else:
-                print("No fuel stations found in this system.")
-
-            return fuel_stations
-
-        except ApiError as e:
-            print(f"Error searching for fuel stations: {e}")
-            return []
-
-    def find_nearest_fuel_station(
-        self, system_symbol: str, current_x: int, current_y: int
-    ) -> Optional[Dict[str, Any]]:
-        """Find the nearest fuel station to the given coordinates"""
-        stations = self.find_fuel_stations_in_system(system_symbol)
-        if not stations:
-            return None
-
-        # Calculate distances and find the closest
-        def distance(waypoint):
-            dx = waypoint["x"] - current_x
-            dy = waypoint["y"] - current_y
-            return (dx * dx + dy * dy) ** 0.5
-
-        return min(stations, key=distance)
-
-    def refuel_ship(self, ship_symbol: str) -> Dict[str, Any]:
-        """Refuel ship at current waypoint"""
-        # Get ship's current location
-        nav = self.get_ship_nav(ship_symbol)
-        system = nav["data"]["systemSymbol"]
-        current_waypoint = nav["data"]["waypointSymbol"]
-        status = nav["data"]["status"]
-
-        # Get current coordinates from waypoint details
-        waypoint_info = self.get_waypoint(system, current_waypoint)
-        current_x = waypoint_info["data"]["x"]
-        current_y = waypoint_info["data"]["y"]
-
-        # Check if current waypoint sells fuel
-        if self.check_waypoint_sells_fuel(system, current_waypoint):
-            if status != "DOCKED":
-                self.dock_ship(ship_symbol)
-            return self._make_request("POST", f"my/ships/{ship_symbol}/refuel", {})
-
-        # Find nearest fuel station
-        print("\nLooking for nearest fuel station...")
-        nearest_station = self.find_nearest_fuel_station(system, current_x, current_y)
-        if not nearest_station:
-            raise ApiError(f"No fuel stations found in system {system}")
-
-        print(f"Found fuel station at {nearest_station['symbol']}")
-
-        # Navigate to fuel station if needed
-        if current_waypoint != nearest_station["symbol"]:
-            if status != "IN_ORBIT":
-                print("Entering orbit...")
-                self.orbit_ship(ship_symbol)
-
-            print(f"Navigating to fuel station {nearest_station['symbol']}...")
-            self.navigate_ship(ship_symbol, nearest_station["symbol"])
-
-            # Wait for arrival and dock
-            print("Docking at fuel station...")
-            self.dock_ship(ship_symbol)
-
-        # Attempt to refuel
-        return self._make_request("POST", f"my/ships/{ship_symbol}/refuel", {})
-
-    def jettison_cargo(
-        self, ship_symbol: str, cargo_symbol: str, units: int
-    ) -> Dict[str, Any]:
-        """Jettison cargo from ship"""
-        return self._make_request(
-            "POST",
-            f"my/ships/{ship_symbol}/jettison",
-            {"symbol": cargo_symbol, "units": units},
-        )
-
-    def sell_cargo(
-        self, ship_symbol: str, cargo_symbol: str, units: int
-    ) -> Dict[str, Any]:
-        """Sell cargo at current market"""
-        return self._make_request(
-            "POST",
-            f"my/ships/{ship_symbol}/sell",
-            {"symbol": cargo_symbol, "units": units},
-        )
-
-    def get_ship_nav(self, ship_symbol: str) -> Dict[str, Any]:
-        """Get ship's navigation details"""
-        return self._make_request("GET", f"my/ships/{ship_symbol}/nav")
-
-    def get_my_ship(self, ship_symbol: str) -> Dict[str, Any]:
-        """Get details about a specific ship"""
+    def get_my_ship(self, ship_symbol):
+        """Get details of a specific ship by its symbol."""
         return self._make_request("GET", f"my/ships/{ship_symbol}")
 
-    def find_asteroids_in_system(self, system_symbol: str) -> List[Dict[str, Any]]:
-        """Find all asteroid fields in the system"""
+    @staticmethod
+    def register_new_agent(symbol, faction):
+        url = "https://api.spacetraders.io/v2/register"
+        data = {"symbol": symbol, "faction": faction}
         try:
-            print(f"Searching for asteroid fields in system {system_symbol}...")
-            waypoints = self.get_system_waypoints(system_symbol)
+            response = requests.post(url, json=data)
+            if response.status_code == 400:
+                raise ValidationError(response.json().get("error", {}).get("message", "Invalid input"))
+            if response.status_code != 201:
+                raise SpaceTradersError(f"Registration failed: {response.text}")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise NetworkError(f"Network error during registration: {str(e)}")
 
-            # Look for both ASTEROID_FIELD type and ASTEROID trait
-            asteroid_fields = [
-                waypoint
-                for waypoint in waypoints["data"]
-                if (
-                    waypoint["type"] == "ASTEROID_FIELD"
-                    or any(
-                        trait["symbol"] == "ASTEROID"
-                        for trait in waypoint.get("traits", [])
-                    )
-                )
-            ]
+    def list_systems(self, limit: int = 20, page: int = 1):
+        """
+        Fetch a paginated list of all systems in the game.
+        
+        Args:
+            limit (int): Number of systems to return per page (default: 20)
+            page (int): Page number for pagination (default: 1)
+            
+        Returns:
+            dict: Paginated response containing system data
+        """
+        params = {"limit": limit, "page": page}
+        return self._make_request("GET", "systems", params=params)
 
-            if asteroid_fields:
-                print(f"Found {len(asteroid_fields)} potential mining locations:")
-                for field in asteroid_fields:
-                    print(f"- {field['symbol']} ({field['type']})")
-            else:
-                print("No asteroid fields found in this system.")
+    def get_system(self, system_symbol: str):
+        """
+        Get the details of a specific system.
+        
+        Args:
+            system_symbol (str): The symbol of the system to get
+            
+        Returns:
+            dict: System details
+        """
+        return self._make_request("GET", f"systems/{system_symbol}")
 
-            return asteroid_fields
+    def list_waypoints(self, system_symbol: str, limit: int = 20, page: int = 1):
+        """
+        Fetch a paginated list of waypoints in a system.
+        
+        Args:
+            system_symbol (str): The symbol of the system to get waypoints for
+            limit (int): Number of waypoints to return per page (default: 20)
+            page (int): Page number for pagination (default: 1)
+            
+        Returns:
+            dict: Paginated response containing waypoint data
+        """
+        params = {"limit": limit, "page": page}
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints", params=params)
 
-        except ApiError as e:
-            print(f"Error searching for asteroid fields: {e}")
-            return []
+    def get_waypoint(self, system_symbol: str, waypoint_symbol: str):
+        """
+        Get the details of a specific waypoint in a system.
+        
+        Args:
+            system_symbol (str): The symbol of the system the waypoint is in
+            waypoint_symbol (str): The symbol of the waypoint to get
+            
+        Returns:
+            dict: Waypoint details
+        """
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}")
 
-    def get_contract(self, contract_id: str) -> Dict[str, Any]:
-        """Get details of a specific contract"""
+    def get_market(self, system_symbol: str, waypoint_symbol: str):
+        """
+        Get market information for a waypoint that contains a marketplace.
+        
+        Args:
+            system_symbol (str): The symbol of the system the market is in
+            waypoint_symbol (str): The symbol of the waypoint containing the market
+            
+        Returns:
+            dict: Market details including available goods, prices, and trade volume
+        """
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/market")
+
+    def get_shipyard(self, system_symbol: str, waypoint_symbol: str):
+        """
+        Get shipyard information for a waypoint that contains a shipyard.
+        
+        Args:
+            system_symbol (str): The symbol of the system the shipyard is in
+            waypoint_symbol (str): The symbol of the waypoint containing the shipyard
+            
+        Returns:
+            dict: Shipyard details including available ships and prices
+        """
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/shipyard")
+
+    def list_factions(self, limit: int = 20, page: int = 1):
+        """
+        Fetch a paginated list of all factions in the game.
+        
+        Args:
+            limit (int): Number of factions to return per page (default: 20)
+            page (int): Page number for pagination (default: 1)
+            
+        Returns:
+            dict: Paginated response containing faction data including their traits and headquarters
+        """
+        params = {"limit": limit, "page": page}
+        return self._make_request("GET", "factions", params=params)
+
+    def get_faction(self, faction_symbol: str):
+        """
+        Get the details of a specific faction.
+        
+        Args:
+            faction_symbol (str): The symbol of the faction to get
+            
+        Returns:
+            dict: Faction details including traits, headquarters, and other characteristics
+        """
+        return self._make_request("GET", f"factions/{faction_symbol}")
+
+    def list_contracts(self, limit: int = 20, page: int = 1):
+        """
+        Fetch a paginated list of all contracts available to the agent.
+        
+        Args:
+            limit (int): Number of contracts to return per page (default: 20)
+            page (int): Page number for pagination (default: 1)
+            
+        Returns:
+            dict: Paginated response containing contract data
+        """
+        params = {"limit": limit, "page": page}
+        return self._make_request("GET", "my/contracts", params=params)
+
+    def get_contract(self, contract_id: str):
+        """
+        Get the details of a specific contract.
+        
+        Args:
+            contract_id (str): The ID of the contract to get
+            
+        Returns:
+            dict: Contract details including terms, deadlines, and payment information
+        """
         return self._make_request("GET", f"my/contracts/{contract_id}")
 
-    def accept_contract(self, contract_id: str) -> Dict[str, Any]:
-        """Accept a contract"""
+    def accept_contract(self, contract_id: str):
+        """
+        Accept a contract, making it available for fulfillment.
+        
+        Args:
+            contract_id (str): The ID of the contract to accept
+            
+        Returns:
+            dict: Updated contract details
+        """
         return self._make_request("POST", f"my/contracts/{contract_id}/accept")
 
-    def deliver_contract(
-        self, contract_id: str, ship_symbol: str, trade_symbol: str, units: int
-    ) -> Dict[str, Any]:
-        """Deliver contract cargo"""
-        return self._make_request(
-            "POST",
-            f"my/contracts/{contract_id}/deliver",
-            {"shipSymbol": ship_symbol, "tradeSymbol": trade_symbol, "units": units},
-        )
+    def deliver_contract(self, contract_id: str, ship_symbol: str, trade_symbol: str, units: int):
+        """
+        Deliver cargo to fulfill a contract.
+        
+        Args:
+            contract_id (str): The ID of the contract
+            ship_symbol (str): The symbol of the ship delivering the cargo
+            trade_symbol (str): The symbol of the trade good to deliver
+            units (int): The number of units to deliver
+            
+        Returns:
+            dict: Updated contract details
+        """
+        data = {
+            "shipSymbol": ship_symbol,
+            "tradeSymbol": trade_symbol,
+            "units": units
+        }
+        return self._make_request("POST", f"my/contracts/{contract_id}/deliver", data=data)
 
-    def fulfill_contract(self, contract_id: str) -> Dict[str, Any]:
-        """Mark a contract as fulfilled"""
+    def fulfill_contract(self, contract_id: str):
+        """
+        Fulfill a contract after all requirements have been met.
+        
+        Args:
+            contract_id (str): The ID of the contract to fulfill
+            
+        Returns:
+            dict: Final contract details including payment
+        """
         return self._make_request("POST", f"my/contracts/{contract_id}/fulfill")
 
-    def find_engineered_asteroids(self, system_symbol: str) -> List[Dict[str, Any]]:
-        """Find engineered asteroids in the system"""
-        try:
-            print(f"Searching for engineered asteroids in system {system_symbol}...")
-            waypoints = self.get_system_waypoints(system_symbol)
-
-            # Look specifically for ENGINEERED_ASTEROID type
-            engineered_asteroids = [
-                waypoint
-                for waypoint in waypoints["data"]
-                if waypoint["type"] == "ENGINEERED_ASTEROID"
-            ]
-
-            if engineered_asteroids:
-                print(f"Found {len(engineered_asteroids)} engineered asteroids:")
-                for asteroid in engineered_asteroids:
-                    print(
-                        f"- {asteroid['symbol']} at ({asteroid['x']}, {asteroid['y']})"
-                    )
-            else:
-                print("No engineered asteroids found in this system.")
-
-            return engineered_asteroids
-
-        except ApiError as e:
-            print(f"Error searching for engineered asteroids: {e}")
-            return []
-
-    def transfer_cargo(
-        self, ship_symbol: str, receiving_ship: str, cargo_symbol: str, units: int
-    ) -> Dict[str, Any]:
+    def purchase_ship(self, ship_type: str, waypoint_symbol: str):
         """
-        Transfer cargo between ships. Ships must be in the same location and both must be docked.
-
+        Purchase a ship at a shipyard.
+        
         Args:
-            ship_symbol: The symbol of the ship transferring cargo
-            receiving_ship: The symbol of the ship receiving cargo
-            cargo_symbol: The symbol of the cargo to transfer
-            units: The number of units to transfer
-
+            ship_type (str): The type of ship to purchase
+            waypoint_symbol (str): The symbol of the waypoint containing the shipyard
+            
         Returns:
-            API response containing transfer details
+            dict: Details of the purchased ship
         """
-        return self._make_request(
-            "POST",
-            f"my/ships/{ship_symbol}/transfer",
-            {"tradeSymbol": cargo_symbol, "units": units, "shipSymbol": receiving_ship},
-        )
+        data = {
+            "shipType": ship_type,
+            "waypointSymbol": waypoint_symbol
+        }
+        return self._make_request("POST", "my/ships", data=data)
+
+    def get_ship_nav(self, ship_symbol: str):
+        """
+        Get the current navigation details of a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship
+            
+        Returns:
+            dict: Navigation details including current route, status, and flight mode
+        """
+        return self._make_request("GET", f"my/ships/{ship_symbol}/nav")
+
+    def orbit_ship(self, ship_symbol: str):
+        """
+        Attempt to move your ship into orbit at its current location.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to orbit
+            
+        Returns:
+            dict: Updated navigation details
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/orbit")
+
+    def dock_ship(self, ship_symbol: str):
+        """
+        Attempt to dock your ship at its current location.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to dock
+            
+        Returns:
+            dict: Updated navigation details
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/dock")
+
+    def navigate_ship(self, ship_symbol: str, waypoint_symbol: str):
+        """
+        Navigate your ship to a target destination.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to navigate
+            waypoint_symbol (str): The symbol of the waypoint to navigate to
+            
+        Returns:
+            dict: Navigation details including route and fuel consumption
+        """
+        data = {
+            "waypointSymbol": waypoint_symbol
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/navigate", data=data)
+
+    def patch_ship_nav(self, ship_symbol: str, flight_mode: str):
+        """
+        Update the flight mode of a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to update
+            flight_mode (str): The new flight mode. 
+                             One of: 'DRIFT', 'STEALTH', 'CRUISE', 'BURN'
+            
+        Returns:
+            dict: Updated navigation details
+        """
+        data = {
+            "flightMode": flight_mode
+        }
+        return self._make_request("PATCH", f"my/ships/{ship_symbol}/nav", data=data)
+
+    def get_ship_cargo(self, ship_symbol: str):
+        """
+        Get the cargo details of a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship
+            
+        Returns:
+            dict: Cargo details including inventory and capacity
+        """
+        return self._make_request("GET", f"my/ships/{ship_symbol}/cargo")
+
+    def purchase_cargo(self, ship_symbol: str, symbol: str, units: int):
+        """
+        Purchase cargo from a market.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to purchase cargo for
+            symbol (str): The symbol of the trade good to purchase
+            units (int): The number of units to purchase
+            
+        Returns:
+            dict: Updated cargo details and transaction information
+        """
+        data = {
+            "symbol": symbol,
+            "units": units
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/purchase", data=data)
+
+    def sell_cargo(self, ship_symbol: str, symbol: str, units: int):
+        """
+        Sell cargo to a market.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship selling cargo
+            symbol (str): The symbol of the trade good to sell
+            units (int): The number of units to sell
+            
+        Returns:
+            dict: Updated cargo details and transaction information
+        """
+        data = {
+            "symbol": symbol,
+            "units": units
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/sell", data=data)
+
+    def transfer_cargo(self, ship_symbol: str, trade_symbol: str, units: int, receiving_ship: str):
+        """
+        Transfer cargo between ships.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship transferring cargo
+            trade_symbol (str): The symbol of the trade good to transfer
+            units (int): The number of units to transfer
+            receiving_ship (str): The symbol of the ship receiving the cargo
+            
+        Returns:
+            dict: Updated cargo details for both ships
+        """
+        data = {
+            "tradeSymbol": trade_symbol,
+            "units": units,
+            "shipSymbol": receiving_ship
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/transfer", data=data)
+
+    def jettison_cargo(self, ship_symbol: str, symbol: str, units: int):
+        """
+        Jettison (throw away) cargo from a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship jettisoning cargo
+            symbol (str): The symbol of the trade good to jettison
+            units (int): The number of units to jettison
+            
+        Returns:
+            dict: Updated cargo details
+        """
+        data = {
+            "symbol": symbol,
+            "units": units
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/jettison", data=data)
+
+    def refuel_ship(self, ship_symbol: str, units: int | None = None):
+        """
+        Refuel a ship from a market.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship to refuel
+            units (int, optional): The amount of fuel to purchase. If not specified,
+                                 will refuel to maximum capacity
+            
+        Returns:
+            dict: Updated fuel details and transaction information
+        """
+        data = {"units": units} if units is not None else {}
+        return self._make_request("POST", f"my/ships/{ship_symbol}/refuel", data=data)
+
+    def create_chart(self, ship_symbol: str):
+        """
+        Create a chart of the current waypoint.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship creating the chart
+            
+        Returns:
+            dict: Details of the chart that was created
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/chart")
+
+    def create_survey(self, ship_symbol: str):
+        """
+        Create a survey of deposits at the current waypoint.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship creating the survey
+            
+        Returns:
+            dict: Survey results containing deposits found
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/survey")
+
+    def extract_resources(self, ship_symbol: str, survey: dict | None = None):
+        """
+        Extract resources from the current waypoint.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship extracting resources
+            survey (dict, optional): Survey data to target specific deposits
+            
+        Returns:
+            dict: Extraction results including yield and cooldown
+        """
+        data = {"survey": survey} if survey is not None else {}
+        return self._make_request("POST", f"my/ships/{ship_symbol}/extract", data=data)
+
+    def create_ship_system_scan(self, ship_symbol: str):
+        """
+        Scan for system information.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship performing the scan
+            
+        Returns:
+            dict: Results of the scan including nearby systems
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/scan/systems")
+
+    def create_ship_waypoint_scan(self, ship_symbol: str):
+        """
+        Scan for waypoint information.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship performing the scan
+            
+        Returns:
+            dict: Results of the scan including nearby waypoints
+        """
+        return self._make_request("POST", f"my/ships/{ship_symbol}/scan/waypoints")
+
+    def get_mounts(self, ship_symbol: str):
+        """
+        Get the mounts installed on a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship
+            
+        Returns:
+            dict: List of mounts installed on the ship
+        """
+        return self._make_request("GET", f"my/ships/{ship_symbol}/mounts")
+
+    def install_mount(self, ship_symbol: str, mount_symbol: str):
+        """
+        Install a mount on a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship
+            mount_symbol (str): The symbol of the mount to install
+            
+        Returns:
+            dict: Updated ship mount information
+        """
+        data = {
+            "symbol": mount_symbol
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/mounts/install", data=data)
+
+    def remove_mount(self, ship_symbol: str, mount_symbol: str):
+        """
+        Remove a mount from a ship.
+        
+        Args:
+            ship_symbol (str): The symbol of the ship
+            mount_symbol (str): The symbol of the mount to remove
+            
+        Returns:
+            dict: Updated ship mount information
+        """
+        data = {
+            "symbol": mount_symbol
+        }
+        return self._make_request("POST", f"my/ships/{ship_symbol}/mounts/remove", data=data)

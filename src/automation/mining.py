@@ -1,26 +1,40 @@
+from typing import Optional, Dict, Any, List, Tuple
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-from client import ApiError, SpaceTradersClient
+from src.client import SpaceTradersClient
+from src.exceptions import (
+    SpaceTradersError,
+    ValidationError,
+    ResourceNotFoundError,
+    CooldownError,
+    InsufficientResourcesError,
+)
 
 
 class MiningError(Exception):
-    """Custom exception for mining operations"""
-
+    """Custom exception for mining operation errors"""
     pass
+
+
+def get_cooldown_remaining(client: SpaceTradersClient, ship_symbol: str) -> int:
+    try:
+        cooldown = client.get_ship_cooldown(ship_symbol)
+        if "data" in cooldown and cooldown["data"]:
+            remaining = cooldown["data"].get("remainingSeconds", 0)
+            return remaining
+    except CooldownError:
+        return 0  # No cooldown
+    except SpaceTradersError:
+        return 0  # If we can't get cooldown, assume no cooldown
+    return 0
 
 
 def wait_for_cooldown(client: SpaceTradersClient, ship_symbol: str) -> None:
     """Wait for ship's cooldown to complete"""
-    try:
-        cooldown = client.get_ship_cooldown(ship_symbol)
-        if "data" in cooldown and cooldown["data"].get("remainingSeconds", 0) > 0:
-            remaining = cooldown["data"]["remainingSeconds"]
-            print(f"Cooling down... {remaining} seconds remaining")
-            time.sleep(remaining + 1)  # Add 1 second buffer
-    except ApiError:
-        # If we can't get cooldown, assume no cooldown
-        pass
+    remaining = get_cooldown_remaining(client, ship_symbol)
+    if remaining > 0:
+        print(f"Cooling down... {remaining} seconds remaining")
+        time.sleep(remaining + 1)  # Add 1 second buffer
+
 
 
 def find_nearest_asteroid_field(
@@ -143,7 +157,7 @@ def find_nearest_asteroid_field(
         print("Could not find any suitable asteroid fields")
         return None
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         print(f"Error finding asteroid field: {str(e)}")
         raise MiningError(f"Failed to find asteroid field: {str(e)}")
     except Exception as e:
@@ -486,7 +500,7 @@ def prepare_for_mining(
             print("Arrived at asteroid field.")
             return True, asteroid_field
 
-        except ApiError as e:
+        except SpaceTradersError as e:
             print(f"Navigation error: {str(e)}")
             print("Navigation error details:")
             print(f"- Ship status: {current_status}")
@@ -494,10 +508,10 @@ def prepare_for_mining(
             print(f"- Target waypoint: {target_waypoint}")
             raise
 
-    except ApiError as e:
-        print(f"API Error during mining preparation: {str(e)}")
+    except (ValidationError, ResourceNotFoundError, CooldownError) as e:
+        print(f"Error during mining preparation: {str(e)}")
         raise MiningError(f"Failed to prepare for mining: {str(e)}")
-    except Exception as e:
+    except SpaceTradersError as e:
         print(f"Unexpected error during mining preparation: {str(e)}")
         raise MiningError(f"Failed to prepare for mining: {str(e)}")
 
@@ -592,17 +606,17 @@ def mine_resources(
                 if not resource_type or cargo_item["symbol"] == resource_type:
                     results.append(result)
 
-            except ApiError as e:
+            except SpaceTradersError as e:
                 if "cooldown" in str(e).lower():
                     wait_for_cooldown(client, ship_symbol)
                 else:
                     print(f"Extraction failed: {str(e)}")
                     raise
 
-    except ApiError as e:
-        print(f"API Error during mining: {str(e)}")
+    except (ValidationError, ResourceNotFoundError, CooldownError, InsufficientResourcesError) as e:
+        print(f"Error during mining: {str(e)}")
         raise MiningError(f"Mining operation failed: {str(e)}")
-    except Exception as e:
+    except SpaceTradersError as e:
         print(f"Unexpected error during mining: {str(e)}")
         raise MiningError(f"Mining operation failed: {str(e)}")
 
@@ -635,10 +649,10 @@ def sell_all_cargo(
                 )
                 results.append(result)
 
-            except ApiError as e:
+            except SpaceTradersError as e:
                 print(f"Failed to sell {item['symbol']}: {str(e)}")
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         raise MiningError(f"Failed to sell cargo: {str(e)}")
     except Exception as e:
         raise MiningError(f"Unexpected error while selling: {str(e)}")
@@ -653,7 +667,7 @@ def get_market_imports(
     try:
         market_data = client.get_market(system, waypoint)
         return [item["symbol"] for item in market_data["data"]["imports"]]
-    except ApiError as e:
+    except SpaceTradersError as e:
         print(f"Failed to get market data: {str(e)}")
         return []
 
@@ -730,7 +744,7 @@ def find_market_for_goods(
                 print(f"- {good}")
         return nearest
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         print(f"Failed to find market: {str(e)}")
         return None
 
@@ -766,12 +780,12 @@ def sell_cargo_at_market(
                         f"for {transaction['totalPrice']} credits"
                     )
                     results.append(result)
-                except ApiError as e:
+                except SpaceTradersError as e:
                     print(f"Failed to sell {item['symbol']}: {str(e)}")
             else:
                 print(f"Market does not accept {item['symbol']}")
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         print(f"Error during sale: {str(e)}")
 
     return results
@@ -814,7 +828,7 @@ def handle_excess_cargo(
                 print(f"Jettisoning {item['units']} units of {item['symbol']}...")
                 client.jettison_cargo(ship_symbol, item["symbol"], item["units"])
                 print(f"Successfully jettisoned {item['symbol']}")
-            except ApiError as e:
+            except SpaceTradersError as e:
                 print(f"Failed to jettison {item['symbol']}: {str(e)}")
 
         # Return to delivery destination if needed and not already there
@@ -843,17 +857,17 @@ def handle_excess_cargo(
                     print("Arrived at delivery destination.")
                 else:
                     print("Already at delivery destination.")
-            except ApiError as e:
+            except SpaceTradersError as e:
                 print(f"Failed to return to delivery destination: {str(e)}")
                 raise
         else:
             print("Already at delivery destination.")
 
-    except ApiError as e:
+    except (ValidationError, InsufficientResourcesError) as e:
         print(f"Error handling excess cargo: {str(e)}")
         raise MiningError(f"Failed to handle excess cargo: {str(e)}")
-    except Exception as e:
-        print(f"Error handling excess cargo: {str(e)}")
+    except SpaceTradersError as e:
+        print(f"Unexpected error handling excess cargo: {str(e)}")
         raise MiningError(f"Failed to handle excess cargo: {str(e)}")
 
 
@@ -950,7 +964,7 @@ def mine_for_contract(
                     )
                     print(f"Delivered {total_mined} units of {resource_type}")
                     total_mined = 0  # Reset counter after delivery
-                except ApiError as e:
+                except SpaceTradersError as e:
                     print(f"Failed to deliver cargo: {str(e)}")
 
                 # Return to mining
@@ -967,7 +981,7 @@ def mine_for_contract(
                     "\nNot finding required resource. Will try a different location next cycle."
                 )
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         raise MiningError(f"Mining operation failed: {str(e)}")
 
     return results

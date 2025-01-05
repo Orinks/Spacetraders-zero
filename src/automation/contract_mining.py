@@ -1,15 +1,12 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from client import ApiError, SpaceTradersClient
-
-from .mining import (MiningError, mine_for_contract, mine_resources,
-                     prepare_for_mining, wait_for_cooldown)
+from src.client import SpaceTradersClient, SpaceTradersError
+from .mining_manager import MiningManager, MiningTarget
 
 
 class ContractMiningError(Exception):
     """Custom exception for contract mining operations"""
-
     pass
 
 
@@ -82,7 +79,7 @@ def get_active_mining_contract(client: SpaceTradersClient) -> Optional[Dict[str,
         print("\nNo suitable contracts found.")
         return None
 
-    except ApiError as e:
+    except SpaceTradersError as e:
         raise ContractMiningError(f"Failed to get contracts: {str(e)}")
 
 
@@ -108,59 +105,6 @@ def get_contract_resource_requirements(
         raise ContractMiningError(f"Failed to get resource requirements: {str(e)}")
 
 
-def find_mining_ship(client: SpaceTradersClient) -> Optional[str]:
-    """Find a suitable mining ship or command the mining drone"""
-    try:
-        ships = client.list_ships()
-
-        # First check if we have a command ship
-        command_ship = next(
-            (
-                ship
-                for ship in ships["data"]
-                if ship["registration"]["role"] == "COMMAND"
-                and not any(
-                    mount["symbol"].startswith("MOUNT_MINING_LASER")
-                    for mount in ship["mounts"]
-                )
-            ),
-            None,
-        )
-
-        if command_ship:
-            print(f"\nFound command ship: {command_ship['symbol']}")
-            print(f"Location: {command_ship['nav']['waypointSymbol']}")
-            print(f"Status: {command_ship['nav']['status']}")
-            return command_ship["symbol"]
-
-        # If no command ship, look for a mining ship directly
-        mining_ship = next(
-            (
-                ship
-                for ship in ships["data"]
-                if ship["registration"]["role"] == "EXCAVATOR"
-                and any(
-                    mount["symbol"].startswith("MOUNT_MINING_LASER")
-                    for mount in ship["mounts"]
-                )
-            ),
-            None,
-        )
-
-        if not mining_ship:
-            print("No mining ships found.")
-            return None
-
-        print(f"\nSelected mining ship: {mining_ship['symbol']}")
-        print(f"Location: {mining_ship['nav']['waypointSymbol']}")
-        print(f"Status: {mining_ship['nav']['status']}")
-
-        return mining_ship["symbol"]
-
-    except ApiError as e:
-        raise ContractMiningError(f"Failed to find mining ship: {str(e)}")
-
-
 def handle_contract_mining(client: SpaceTradersClient) -> None:
     """Main function to handle contract mining operations"""
     try:
@@ -172,9 +116,9 @@ def handle_contract_mining(client: SpaceTradersClient) -> None:
             print("No contracts available at the moment.")
             return
 
-        # Find a suitable mining ship
-        ship_symbol = find_mining_ship(client)
-        if not ship_symbol:
+        # Initialize mining manager
+        mining_mgr = MiningManager(client)
+        if not mining_mgr.initialize_mining_ships():
             print("No mining ships available.")
             return
 
@@ -205,15 +149,19 @@ def handle_contract_mining(client: SpaceTradersClient) -> None:
                 )
 
                 try:
-                    mining_results = mine_for_contract(
-                        client,
-                        ship_symbol,
-                        contract["id"],
-                        req["tradeSymbol"],
-                        units_needed,
-                        req["destination"],
+                    target = MiningTarget(
+                        waypoint_symbol="",  # Will be determined by mining manager
+                        resource_type=req["tradeSymbol"],
+                        units_required=units_needed,
+                        delivery_destination=req["destination"]
+                    )
+                    
+                    mining_results = mining_mgr.mine_resources(
+                        target,
+                        contract["id"]
                     )
                     print(f"Mining operation completed for {req['tradeSymbol']}")
+                    
                 except Exception as e:
                     print(f"Contract mining failed: {str(e)}")
                     continue  # Try next requirement if this one fails
@@ -229,7 +177,7 @@ def handle_contract_mining(client: SpaceTradersClient) -> None:
             payment = fulfill_result["data"]["contract"]["terms"]["payment"]
             print(f"Contract fulfilled! Received {payment['onFulfilled']} credits")
 
-    except (ApiError, ContractMiningError, MiningError) as e:
+    except (SpaceTradersError, ContractMiningError) as e:
         print(f"Contract mining failed: {str(e)}")
     except Exception as e:
         print(f"Unexpected error during contract mining: {str(e)}")
